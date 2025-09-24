@@ -1,0 +1,1008 @@
+<!-- src/components/FileBrowser.vue -->
+
+<template>
+  <div class="file-browser-page">
+    <!-- 页面头部 -->
+    <div class="page-header">
+      <h1 class="page-title">📁 文件管理系统</h1>
+      <p class="page-desc">管理您的所有文件与文件夹，支持上传、下载、重命名、拖拽移动等操作</p>
+    </div>
+
+    <!-- 面包屑导航 -->
+    <div class="breadcrumb-container">
+      <el-breadcrumb :separator-icon="ArrowRight" class="custom-breadcrumb">
+        <el-breadcrumb-item
+          v-for="(part, index) in breadcrumb"
+          :key="index"
+          @click="navigateTo(part.path)"
+          class="breadcrumb-item"
+        >
+          {{ part.name || '根目录' }}
+        </el-breadcrumb-item>
+      </el-breadcrumb>
+    </div>
+
+    <!-- 工具栏 -->
+    <div class="toolbar-container">
+      <div class="actions-toolbar">
+        <div class="primary-actions">
+          <el-button
+            type="primary"
+            @click="showCreateFolderDialog"
+            size="default"
+            class="action-btn create-folder-btn"
+          >
+            <Folder class="icon" />
+            <span>新建文件夹</span>
+          </el-button>
+          <el-button
+            type="success"
+            @click="showCreateFileDialog"
+            size="default"
+            class="action-btn create-file-btn"
+          >
+            <DocumentAdd class="icon" />
+            <span>新建文件</span>
+          </el-button>
+        </div>
+        <div class="secondary-actions">
+          <el-upload
+            :show-file-list="false"
+            :http-request="handleUpload"
+            :before-upload="beforeUpload"
+            class="upload-wrapper"
+          >
+            <el-button type="primary" size="default" class="action-btn upload-btn">
+              <Upload class="icon" />
+              <span>上传文件</span>
+            </el-button>
+          </el-upload>
+        </div>
+      </div>
+    </div>
+
+    <!-- 文件列表容器 -->
+    <div class="file-table-container">
+      <el-table
+        :data="fileList"
+        class="file-table"
+        v-loading="loading"
+        row-key="path"
+        border
+        :default-sort="{ prop: 'name', order: 'ascending' }"
+      >
+        <el-table-column prop="name" label="名称" width="320" sortable>
+          <template #default="{ row }">
+            <div
+              @click="handleClick(row)"
+              @contextmenu.prevent="showContextMenu($event, row)"
+              class="file-name cursor-pointer"
+              draggable="true"
+              @dragstart="handleDragStart($event, row)"
+              @dragover.prevent="handleDragOver($event, row)"
+              @drop="handleDrop($event, row)"
+              @dragenter="handleDragEnter($event, row)"
+              @dragleave="handleDragLeave($event, row)"
+            >
+              <component :is="row.directory ? Folder : Document" class="file-icon" />
+              {{ row.name }}
+              <div
+                v-if="dragState.isDragging && dragState.targetPath === row.path"
+                class="drop-indicator"
+              >
+                <div class="drop-arrow">↓</div>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="type" label="类型" width="140" />
+        <el-table-column prop="size" label="大小" width="120" sortable>
+          <template #default="{ row }">
+            {{ formatSize(row.size) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="createdTime" label="创建时间" width="180" sortable>
+          <template #default="{ row }">
+            {{ formatDate(row.createdTime) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="lastModified" label="修改时间" width="180" sortable>
+          <template #default="{ row }">
+            {{ formatDate(row.lastModified) }}
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
+    <!-- 对话框们 -->
+    <!-- 新建文件夹对话框 -->
+    <el-dialog v-model="dialog.folderVisible" title="📂 新建文件夹" width="30%">
+      <el-form :model="dialog.form" label-width="80px">
+        <el-form-item label="文件夹名">
+          <el-input v-model="dialog.form.name" placeholder="请输入文件夹名称" autofocus />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="dialog.folderVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmCreateFolder">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 新建文件对话框 -->
+    <el-dialog v-model="dialog.fileVisible" title="📄 新建文件" width="30%">
+      <el-form :model="dialog.form" label-width="80px">
+        <el-form-item label="文件名">
+          <el-input v-model="dialog.form.name" placeholder="例如：readme.txt" autofocus />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="dialog.fileVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmCreateFile">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 重命名对话框 -->
+    <el-dialog v-model="dialog.renameVisible" title="✏️ 重命名" width="30%">
+      <el-form :model="dialog.form" label-width="80px">
+        <el-form-item label="新名称">
+          <el-input v-model="dialog.form.newName" :placeholder="`请输入新名称`" autofocus />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="dialog.renameVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmRename">确定</el-button>
+      </template>
+    </el-dialog>
+  </div>
+
+  <!-- 属性对话框 -->
+  <el-dialog
+    v-model="propertiesDialog.visible"
+    title="📄 文件属性"
+    width="400px"
+    :close-on-click-modal="false"
+  >
+    <div v-if="propertiesDialog.item" class="properties-content">
+      <div class="prop-item">
+        <label>名称：</label>
+        <span>{{ propertiesDialog.item.name }}</span>
+      </div>
+      <div class="prop-item">
+        <label>路径：</label>
+        <span class="path-text">{{ propertiesDialog.item.path }}</span>
+      </div>
+      <div class="prop-item">
+        <label>类型：</label>
+        <span>{{ propertiesDialog.item.directory ? '文件夹' : propertiesDialog.item.type }}</span>
+      </div>
+      <div class="prop-item" v-if="!propertiesDialog.item.directory">
+        <label>大小：</label>
+        <span>{{ formatSize(propertiesDialog.item.size) }}</span>
+      </div>
+      <div class="prop-item">
+        <label>修改时间：</label>
+        <span>{{ formatDate(propertiesDialog.item.lastModified) }}</span>
+      </div>
+      <div class="prop-item">
+        <label>创建时间：</label>
+        <span>{{ formatDate(propertiesDialog.item.lastModified) }}</span>
+        <!-- 如有真实创建时间可替换 -->
+      </div>
+    </div>
+    <template #footer>
+      <el-button @click="propertiesDialog.visible = false" type="primary">关闭</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 右键菜单 -->
+  <div
+    v-if="contextMenu.visible"
+    class="context-menu"
+    :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+    ref="contextMenuRef"
+  >
+    <div class="context-menu-item" @click="handleOpen" v-if="contextMenu.target?.directory">
+      <FolderOpened class="menu-icon" />
+      打开
+    </div>
+    <div class="context-menu-item" @click="handleDownload" v-else>
+      <Download class="menu-icon" />
+      下载
+    </div>
+    <div class="context-menu-divider"></div>
+    <div class="context-menu-item" @click="handleRename">
+      <Edit class="menu-icon" />
+      重命名
+    </div>
+    <div class="context-menu-item" @click="handleProperties">
+      <InfoFilled class="menu-icon" />
+      属性
+    </div>
+    <div class="context-menu-divider"></div>
+    <div class="context-menu-item danger" @click="handleDelete">
+      <Delete class="menu-icon" />
+      删除
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+  import fileApi from '@/api/fileApi';
+  import type { FileItem } from '@/types/FileItem';
+  import {
+    ArrowRight,
+    Delete,
+    Document,
+    DocumentAdd,
+    Download,
+    Edit,
+    Folder,
+    FolderOpened,
+    InfoFilled,
+    Upload,
+  } from '@element-plus/icons-vue';
+  import { onClickOutside, onKeyStroke } from '@vueuse/core';
+  import { ElMessage, ElMessageBox } from 'element-plus';
+  import { computed, onMounted, ref } from 'vue';
+
+  // ======== 右键菜单逻辑 =========
+
+  // 右键菜单状态
+  const contextMenu = ref({
+    visible: false,
+    x: 0,
+    y: 0,
+    target: null as FileItem | null,
+  });
+
+  const contextMenuRef = ref<HTMLElement | null>(null);
+
+  // 显示右键菜单
+  const showContextMenu = (e: MouseEvent, item: FileItem) => {
+    e.preventDefault();
+    contextMenu.value.target = item;
+    // 计算菜单位置（防止超出视口）
+    const menuWidth = 200;
+    const menuHeight = 220; // 菜单高度增加，因为增加了更多选项
+    const x = e.clientX + menuWidth > window.innerWidth ? e.clientX - menuWidth : e.clientX;
+    const y = e.clientY + menuHeight > window.innerHeight ? e.clientY - menuHeight : e.clientY;
+    contextMenu.value.x = x;
+    contextMenu.value.y = y;
+    contextMenu.value.visible = true;
+  };
+
+  // 隐藏菜单
+  const hideContextMenu = () => {
+    contextMenu.value.visible = false;
+  };
+
+  // 监听点击外部关闭
+  onClickOutside(
+    contextMenuRef, // 我们稍后绑定到菜单容器
+    () => {
+      hideContextMenu();
+    },
+  );
+
+  // 监听 ESC 键
+  onKeyStroke('Escape', () => {
+    hideContextMenu();
+  });
+
+  // 菜单操作
+  const handleOpen = () => {
+    const item = contextMenu.value.target;
+    if (!item) return;
+    hideContextMenu();
+    if (item.directory) {
+      loadFiles(item.path);
+    }
+  };
+
+  const handleDownload = () => {
+    const item = contextMenu.value.target;
+    if (!item) return;
+    hideContextMenu();
+    if (!item.directory) {
+      fileApi.downloadFile(item.path);
+    }
+  };
+
+  const handleRename = () => {
+    const item = contextMenu.value.target;
+    if (!item) return;
+    hideContextMenu();
+    renameFileAction(item);
+  };
+
+  const handleDelete = () => {
+    const item = contextMenu.value.target;
+    if (!item) return;
+    hideContextMenu();
+    deleteFileAction(item);
+  };
+
+  const handleProperties = () => {
+    const item = contextMenu.value.target;
+    if (!item) return;
+    hideContextMenu();
+    showProperties(item);
+  };
+
+  // 属性弹窗
+  const propertiesDialog = ref({
+    visible: false,
+    item: null as FileItem | null,
+  });
+
+  const showProperties = (item: FileItem) => {
+    propertiesDialog.value.item = item;
+    propertiesDialog.value.visible = true;
+  };
+
+  // 拖拽状态
+  const dragState = ref({
+    isDragging: false,
+    draggedItem: null as FileItem | null,
+    targetPath: '',
+    dragOverItem: null as FileItem | null,
+  });
+
+  // 处理拖拽开始
+  const handleDragStart = (event: DragEvent, item: FileItem) => {
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', item.path);
+      dragState.value.draggedItem = item;
+      dragState.value.isDragging = true;
+      // 设置拖拽图标
+      const img = new Image();
+      img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+      event.dataTransfer.setDragImage(img, 0, 0);
+    }
+  };
+
+  // 处理拖拽经过
+  const handleDragOver = (event: DragEvent, item: FileItem) => {
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'move';
+    }
+
+    // 只允许拖拽到文件夹
+    if (!item.directory) {
+      return;
+    }
+
+    // 更新拖拽目标
+    dragState.value.targetPath = item.path;
+    dragState.value.dragOverItem = item;
+  };
+
+  // 处理拖拽进入
+  const handleDragEnter = (event: DragEvent, item: FileItem) => {
+    event.preventDefault();
+    // 只允许拖拽到文件夹
+    if (!item.directory) {
+      return;
+    }
+  };
+
+  // 处理拖拽离开
+  const handleDragLeave = (event: DragEvent, item: FileItem) => {
+    // 清除目标路径
+    if (dragState.value.targetPath === item.path) {
+      dragState.value.targetPath = '';
+      dragState.value.dragOverItem = null;
+    }
+  };
+
+  // 处理拖拽释放
+  const handleDrop = async (event: DragEvent, targetItem: FileItem) => {
+    event.preventDefault();
+
+    // 只允许拖拽到文件夹
+    if (!targetItem.directory) {
+      ElMessage.warning('只能拖拽到文件夹内');
+      dragState.value.isDragging = false;
+      dragState.value.targetPath = '';
+      dragState.value.dragOverItem = null;
+      return;
+    }
+
+    const draggedItem = dragState.value.draggedItem;
+    if (!draggedItem) {
+      dragState.value.isDragging = false;
+      dragState.value.targetPath = '';
+      dragState.value.dragOverItem = null;
+      return;
+    }
+
+    // 不能拖拽到自身或自身子目录
+    if (
+      draggedItem.path === targetItem.path ||
+      targetItem.path.startsWith(draggedItem.path + '/')
+    ) {
+      ElMessage.warning('不能将文件夹拖拽到自身或其子目录中');
+      dragState.value.isDragging = false;
+      dragState.value.targetPath = '';
+      dragState.value.dragOverItem = null;
+      return;
+    }
+
+    // 构建目标路径
+    const fileName = draggedItem.name;
+    const targetPath = targetItem.path + '/' + fileName;
+
+    try {
+      await fileApi.moveFile(draggedItem.path, targetPath);
+      ElMessage.success('移动成功');
+      await loadFiles(currentPath.value);
+    } catch (error) {
+      ElMessage.error('移动失败：' + (error as any).message);
+    } finally {
+      dragState.value.isDragging = false;
+      dragState.value.targetPath = '';
+      dragState.value.dragOverItem = null;
+    }
+  };
+
+  const currentPath = ref('');
+  const fileList = ref<FileItem[]>([]);
+  const loading = ref(false);
+
+  // 面包屑
+  const breadcrumb = computed(() => {
+    const parts = currentPath.value.split('/').filter(Boolean);
+    const crumbs = [{ name: '', path: '' }];
+    let path = '';
+    parts.forEach((part, index) => {
+      path += (index > 0 ? '/' : '') + part;
+      crumbs.push({
+        name: part,
+        path: path,
+      });
+    });
+    return crumbs;
+  });
+
+  // 对话框状态
+  const dialog = ref({
+    folderVisible: false,
+    fileVisible: false,
+    renameVisible: false,
+    form: {
+      name: '',
+      newName: '',
+      currentFile: null as FileItem | null,
+    },
+  });
+
+  // 加载当前目录
+  const loadFiles = async (path = '') => {
+    loading.value = true;
+    try {
+      currentPath.value = path;
+      fileList.value = await fileApi.getFileList(path);
+    } catch (error) {
+      console.log(error);
+      ElMessage.error('加载文件列表失败');
+    } finally {
+      loading.value = false;
+    }
+  };
+
+  // 导航到指定路径
+  const navigateTo = (path: string) => {
+    loadFiles(path);
+  };
+
+  // 点击文件/文件夹
+  const handleClick = (row: FileItem) => {
+    if (row.directory) {
+      loadFiles(row.path);
+    } else {
+      // 可预览或直接下载
+      fileApi.downloadFile(row.path);
+    }
+  };
+
+  // 格式化大小
+  const formatSize = (bytes: number): string => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  // 格式化日期
+  const formatDate = (timestamp: number): string => {
+    return new Date(timestamp).toLocaleString();
+  };
+
+  // 新建文件夹
+  const showCreateFolderDialog = () => {
+    dialog.value.form.name = '';
+    dialog.value.folderVisible = true;
+  };
+
+  const confirmCreateFolder = async () => {
+    if (!dialog.value.form.name.trim()) {
+      ElMessage.warning('请输入文件夹名称');
+      return;
+    }
+    try {
+      const newPath = currentPath.value
+        ? `${currentPath.value}/${dialog.value.form.name}`
+        : dialog.value.form.name;
+      await fileApi.createDirectory(newPath);
+      ElMessage.success('文件夹创建成功');
+      dialog.value.folderVisible = false;
+      await loadFiles(currentPath.value); // 刷新
+    } catch (error) {
+      ElMessage.error('创建失败：' + (error as any).message);
+    }
+  };
+
+  // 新建文件
+  const showCreateFileDialog = () => {
+    dialog.value.form.name = '';
+    dialog.value.fileVisible = true;
+  };
+
+  const confirmCreateFile = async () => {
+    if (!dialog.value.form.name.trim()) {
+      ElMessage.warning('请输入文件名');
+      return;
+    }
+    try {
+      const newPath = currentPath.value
+        ? `${currentPath.value}/${dialog.value.form.name}`
+        : dialog.value.form.name;
+      await fileApi.createFile(newPath);
+      ElMessage.success('文件创建成功');
+      dialog.value.fileVisible = false;
+      await loadFiles(currentPath.value);
+    } catch (error) {
+      ElMessage.error('创建失败：' + (error as any).message);
+    }
+  };
+
+  // 上传前检查
+  const beforeUpload = (rawFile: File) => {
+    if (!rawFile.name) {
+      ElMessage.error('文件名无效');
+      return false;
+    }
+    return true;
+  };
+
+  // 自定义上传处理
+  const handleUpload = async (options: any) => {
+    const { file } = options;
+    try {
+      const uploadPath = currentPath.value ? `${currentPath.value}/${file.name}` : file.name;
+      await fileApi.uploadFile(uploadPath, file);
+      ElMessage.success('上传成功');
+      await loadFiles(currentPath.value);
+    } catch (error) {
+      console.log(error);
+      ElMessage.error('上传失败：' + (error as any).message);
+    }
+  };
+
+  // 重命名
+  const renameFileAction = (row: FileItem) => {
+    dialog.value.form.newName = row.name;
+    dialog.value.form.currentFile = row;
+    dialog.value.renameVisible = true;
+  };
+
+  const confirmRename = async () => {
+    if (!dialog.value.form.newName.trim()) {
+      ElMessage.warning('请输入新名称');
+      return;
+    }
+    const oldPath = dialog.value.form.currentFile!.path;
+    const oldDir = oldPath.substring(0, oldPath.lastIndexOf('/') + 1);
+    const newPath = oldDir + dialog.value.form.newName;
+
+    try {
+      await fileApi.renameFile(oldPath, newPath);
+      ElMessage.success('重命名成功');
+      dialog.value.renameVisible = false;
+      await loadFiles(currentPath.value);
+    } catch (error) {
+      ElMessage.error('重命名失败：' + (error as any).message);
+    }
+  };
+
+  // 删除
+  const deleteFileAction = (row: FileItem) => {
+    ElMessageBox.confirm(`确定删除 "${row.name}" 吗？`, '警告', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning',
+    }).then(async () => {
+      try {
+        await fileApi.deleteFile(row.path);
+        ElMessage.success('删除成功');
+        await loadFiles(currentPath.value);
+      } catch (error) {
+        ElMessage.error('删除失败：' + (error as any).message);
+      }
+    });
+  };
+
+  // 初始化加载根目录
+  onMounted(() => {
+    loadFiles('');
+  });
+</script>
+
+<style scoped>
+  .file-browser-page {
+    padding: 24px 32px;
+    background-color: #f8fafc;
+    min-height: 100vh;
+  }
+
+  /* 页面标题 */
+  .page-title {
+    font-size: 28px;
+    font-weight: 600;
+    color: #1e293b;
+    margin: 0 0 8px 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .page-desc {
+    font-size: 14px;
+    color: #64748b;
+    margin: 0 0 24px 0;
+  }
+
+  /* 面包屑 */
+  .breadcrumb-container {
+    margin-bottom: 24px;
+  }
+
+  .custom-breadcrumb :deep(.el-breadcrumb__item) {
+    font-size: 14px;
+  }
+
+  .breadcrumb-item {
+    cursor: pointer;
+    color: #3b82f6;
+    transition: color 0.2s;
+  }
+
+  .breadcrumb-item:hover {
+    color: #1d4ed8;
+    text-decoration: underline;
+  }
+
+  /* 工具栏 - 重新设计布局 */
+  .toolbar-container {
+    margin-bottom: 24px;
+  }
+
+  .actions-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+
+  .primary-actions {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .secondary-actions {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .action-btn {
+    border-radius: 8px;
+    font-weight: 500;
+    font-size: 15px;
+    padding: 12px 20px;
+    height: auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.3s ease;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+    min-width: 120px;
+    text-align: center;
+  }
+
+  .action-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  }
+
+  .action-btn:active {
+    transform: translateY(0);
+  }
+
+  .action-btn .icon {
+    width: 18px;
+    height: 18px;
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+
+  /* 不同类型的按钮样式 */
+  .create-folder-btn {
+    background-color: #3b82f6;
+    border-color: #3b82f6;
+    color: white;
+  }
+
+  .create-folder-btn:hover {
+    background-color: #2563eb;
+    border-color: #2563eb;
+  }
+
+  .create-file-btn {
+    background-color: #10b981;
+    border-color: #10b981;
+    color: white;
+  }
+
+  .create-file-btn:hover {
+    background-color: #059669;
+    border-color: #059669;
+  }
+
+  .upload-btn {
+    background-color: #6366f1;
+    border-color: #6366f1;
+    color: white;
+  }
+
+  .upload-btn:hover {
+    background-color: #4f46e5;
+    border-color: #4f46e5;
+  }
+
+  /* 文件表格容器 */
+  .file-table-container {
+    background: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    overflow: hidden;
+    padding: 20px;
+  }
+
+  .file-table :deep(.el-table) {
+    font-size: 14px;
+  }
+
+  .file-table :deep(.el-table th) {
+    background-color: #f8fafc;
+    font-weight: 600;
+    color: #334155;
+  }
+
+  /* 文件名样式 */
+  .file-name {
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: #1e293b;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    position: relative;
+    padding: 8px 0;
+  }
+
+  .file-name:hover {
+    color: #3b82f6;
+    text-decoration: underline;
+    transform: scale(1.02);
+  }
+
+  .file-icon {
+    width: 18px;
+    height: 18px;
+    color: #64748b;
+  }
+
+  .file-name:hover .file-icon {
+    color: #3b82f6;
+  }
+
+  /* 拖拽效果 */
+  .file-name[draggable='true'] {
+    cursor: grab;
+  }
+
+  .file-name[draggable='true']:active {
+    cursor: grabbing;
+  }
+
+  /* 拖拽目标高亮 */
+  .file-name.drag-over {
+    background-color: #dbeafe;
+    border-radius: 4px;
+  }
+
+  /* 拖拽指示器 */
+  .drop-indicator {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #3b82f6;
+    font-weight: bold;
+    font-size: 18px;
+    animation: bounce 0.6s infinite;
+  }
+
+  @keyframes bounce {
+    0%,
+    100% {
+      transform: translateY(-50%) scale(1);
+    }
+    50% {
+      transform: translateY(-50%) scale(1.2);
+    }
+  }
+
+  /* ========== 右键菜单样式 ========== */
+  .context-menu {
+    position: fixed;
+    z-index: 2000;
+    background: #fff;
+    border: 1px solid #ebeef5;
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+    padding: 8px 0;
+    min-width: 180px;
+    font-size: 15px;
+  }
+
+  /* 右键菜单项 */
+  .context-menu-item {
+    display: flex;
+    align-items: center;
+    padding: 12px 18px;
+    color: #475569;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border-radius: 6px;
+    margin: 0 4px;
+  }
+
+  .context-menu-item:hover {
+    background-color: #f1f5f9;
+    color: #3b82f6;
+  }
+
+  .context-menu-item.danger:hover {
+    color: #ef4444;
+    background-color: #fee2e2;
+  }
+
+  .menu-icon {
+    width: 18px;
+    height: 18px;
+    margin-right: 12px;
+    color: inherit;
+  }
+
+  .context-menu-divider {
+    height: 1px;
+    background-color: #e2e8f0;
+    margin: 6px 0;
+  }
+
+  /* 属性对话框样式 */
+  .properties-content {
+    padding: 16px;
+    line-height: 2;
+  }
+
+  .prop-item label {
+    font-weight: 600;
+    color: #333;
+    width: 80px;
+    display: inline-block;
+  }
+
+  .path-text {
+    word-break: break-all;
+    font-family: monospace;
+    background: #f8f9fa;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    user-select: all;
+    transition: background 0.2s;
+  }
+
+  .path-text:hover {
+    background: #e9ecef;
+    text-decoration: underline;
+  }
+
+  /* 响应式适配 */
+  @media (max-width: 768px) {
+    .file-browser-page {
+      padding: 16px;
+    }
+
+    .page-title {
+      font-size: 24px;
+    }
+
+    .actions-toolbar {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .primary-actions,
+    .secondary-actions {
+      width: 100%;
+      justify-content: center;
+    }
+
+    /* 工具栏按钮 */
+    .action-btn {
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 15px;
+      padding: 12px 20px;
+      transition: all 0.25s ease;
+      min-width: 140px;
+    }
+
+    .action-btn .icon {
+      width: 18px;
+      height: 18px;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+
+    /* 悬停效果增强 */
+    .action-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
+
+    .file-table :deep(.el-table) {
+      font-size: 13px;
+    }
+
+    .file-table :deep(.el-table th),
+    .file-table :deep(.el-table td) {
+      padding: 8px 4px;
+    }
+
+    /* 移动端右键菜单 */
+    .context-menu {
+      font-size: 16px;
+      min-width: 200px;
+    }
+
+    .context-menu-item {
+      padding: 14px 20px;
+    }
+
+    .file-name {
+      padding: 6px 0;
+    }
+  }
+</style>
