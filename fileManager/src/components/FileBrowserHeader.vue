@@ -2,7 +2,7 @@
 
 <template>
   <div class="page-header">
-    <h1 class="page-title">📁 文件管理系统</h1>
+    <h1 class="page-title">📁 文件管理系统/</h1>
     <p class="page-desc">管理您的所有文件与文件夹，支持上传、下载、重命名、拖拽移动等操作</p>
   </div>
 </template>

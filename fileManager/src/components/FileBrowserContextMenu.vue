@@ -11,7 +11,7 @@
   // 右键菜单状态
 
   const handleDownload = () => {
-    const item = props.target;
+    const item = fileStore.contextMenu.target;
     if (!item) return;
     hideContextMenu();
     if (!item.directory) {
